@@ -4,3 +4,4 @@ log/
 bags/
 __pycache__/
 *.pyc
+*.txt
