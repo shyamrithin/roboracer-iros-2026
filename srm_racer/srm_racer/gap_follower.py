@@ -6,34 +6,47 @@
 # Target      : ROS 2 Humble / Python 3.10
 # Created     : 2026-08-31
 # Revised     : 2026-09-01  (v2: pure pursuit steering, gap hysteresis)
+# Revised     : 2026-09-02  (v3: encoder speed estimate, speed-scaled lookahead,
+#                            closed-loop speed control)
 # =============================================================================
 # CODE DESCRIPTION
 # -----------------------------------------------------------------------------
 # Reactive "follow the gap" controller for the RoboRacer digital twin in the
-# AutoDRIVE Simulator. Consumes only competition-legal input streams (2D LiDAR)
-# and emits normalised steering and throttle commands. No map, no memory of the
-# track, and no ground-truth pose, so behaviour transfers to an unseen circuit.
+# AutoDRIVE Simulator. Consumes only competition-legal input streams (2D LiDAR
+# and wheel encoders) and emits normalised steering and throttle commands. No
+# map, no stored knowledge of the circuit, and no ground-truth pose, so the
+# behaviour transfers to an unseen racetrack.
 #
-# REVISION NOTES (v2)
+# REVISION NOTES (v3)
 # -----------------------------------------------------------------------------
-# v1 mapped the bearing of the gap centre directly onto the steering command.
-# That is dimensionally wrong: a gap 60 deg off the nose demanded 60 deg of
-# steer against a 30 deg mechanical limit, so the command clipped to full lock
-# and stayed there. Logged telemetry showed runs of up to 18 consecutive
-# samples at -1.0, with transitions advancing by exactly the slew limit each
-# tick, producing a full-lock-to-full-lock limit cycle in every corner.
+# v2 scaled the pure pursuit lookahead distance from forward LiDAR clearance.
+# That is backwards. Clearance collapses inside a corner, so the lookahead fell
+# to its 0.8 m floor exactly where the aim bearing was widest. At that floor the
+# steering law reduces to delta = atan(0.81 * sin(alpha)), which saturates the
+# 0.5236 rad mechanical limit for any bearing beyond roughly 45 deg. Logged
+# telemetry at throttle 0.20 showed runs of 13 to 14 consecutive samples pinned
+# at -1.0, once per corner.
 #
-# v2 corrects this in two places:
-#   1. Steering is now computed by the pure pursuit geometric law,
-#          delta = atan(2 * L * sin(alpha) / Ld)
-#      where L is the wheelbase, alpha the bearing to the aim point and Ld the
-#      lookahead distance. Lookahead scales with forward clearance, so the car
-#      looks further ahead on straights and closer in tight corners.
-#   2. Gap selection is scored rather than simply "widest wins". The score
-#      rewards depth and physical width but penalises angular distance from the
-#      previously chosen heading. This hysteresis stops the aim point flipping
-#      between two similar candidates on alternate scans, which is what excited
-#      the oscillation.
+# v2 also derated throttle directly from instantaneous steering angle. That
+# closed a positive feedback path: steer hard, cut throttle, vehicle slows,
+# clearance and gap geometry shift, steering changes, throttle jumps. Logged
+# throttle chattered across the full commanded range within a few samples,
+# pitching the suspension continuously.
+#
+# v3 addresses both:
+#   1. Vehicle speed is estimated by differentiating the wheel encoder
+#      positions, which are permissible inputs at run time. Lookahead is then
+#      Ld = base + gain * v, the conventional pure pursuit formulation, with a
+#      floor of 1.2 m. That floor is chosen so that
+#          atan(2 * L * sin(alpha) / 1.2) < 0.5236 rad  for all alpha,
+#      making steering saturation geometrically impossible.
+#   2. Throttle now closes a loop on a speed target rather than reacting to
+#      instantaneous geometry. The target is the minimum of a curvature limit
+#      (from the lateral acceleration budget), a clearance limit (from the
+#      available stopping distance), and an absolute cap. A feedforward term
+#      plus proportional correction produces the command, and the result is
+#      low-pass filtered. Throttle becomes a smooth function of speed error
+#      instead of a fast function of scan geometry.
 #
 # PIPELINE, once per incoming laser scan:
 #   1. Sanitise ranges (NaN and +inf replaced, values clipped to a horizon).
@@ -41,25 +54,41 @@
 #   3. Restrict attention to a forward field of view.
 #   4. Zero a safety bubble around the nearest return.
 #   5. Extend disparities by half the car width so no gap narrower than the
-#      vehicle is ever selected (guards the gaps between track ducts).
-#   6. Score all candidate gaps, pick the best, take its centre as aim bearing.
-#   7. Convert that bearing to a steering angle via pure pursuit, slew-limit it,
-#      and scale throttle by forward clearance.
+#      vehicle is ever selected (this also closes the apparent openings between
+#      the cylindrical track ducts).
+#   6. Score all candidate gaps and pick the best; its centre is the aim
+#      bearing. Scoring penalises angular distance from the previous choice so
+#      the aim point cannot flip between similar candidates on alternate scans.
+#   7. Convert the bearing to a steering angle by pure pursuit with a
+#      speed-scaled lookahead, then slew-limit it.
+#   8. Derive a speed target, close the loop on measured speed, filter, publish.
 #
 # DESIGN CONSTRAINTS
-#   * Every rate limit is expressed per second and multiplied by the measured
-#     dt between scans. The bridge tick observed on the development laptop is
-#     ~18.5 Hz against a documented 40 Hz sensor rate; the evaluation
-#     workstation will differ again. Time-based logic keeps behaviour identical
-#     across all of them.
+#   * Every rate limit and filter is expressed per second and multiplied by the
+#     measured dt between scans. The bridge tick observed on the development
+#     laptop is ~18.5 Hz against a documented 40 Hz sensor rate, and the
+#     evaluation workstation will differ again. Time-based logic keeps
+#     behaviour identical across all of them.
 #   * Negative throttle engages REVERSE on this vehicle rather than braking, so
 #     throttle is clamped non-negative and deceleration relies on the simulated
 #     idle braking torque.
-#   * Restricted topics (ips, odom, tf, lap and collision telemetry,
+#   * Restricted topics (ips, odom, tf, lap and collision telemetry, and
 #     reset_command) are never subscribed to, per section 2.4 of the rule book.
+#     Wheel encoders are explicitly permissible inputs.
+#
+# ENCODER SCALING
+#   sensor_msgs/JointState.position is populated as a float and velocity is
+#   empty, so speed is obtained by differentiation. The position field is taken
+#   to be wheel angle in radians, giving v = r * dtheta/dt with r = 0.0590 m.
+#   If the field is in fact raw ticks, the correct scale is instead
+#   0.3707 m circumference / 1920 ticks per revolution = 1.931e-4 m per tick,
+#   a factor of 305.6 smaller. The scale is exposed as the parameter
+#   `encoder_m_per_unit` and the estimate is logged once per second so it can
+#   be checked against the simulator HUD speed readout.
 #
 # GEOMETRY (2026 Technical Guide)
 #   Car width 0.270 m, wheelbase 0.324 m, front overhang 0.090 m.
+#   Wheel radius 0.0590 m, 16 pulses per revolution, conversion ratio 120.
 #   LiDAR frame at x = 0.2733 m from the rear axle; front bumper at 0.414 m.
 #   Steering limits +/- 0.5236 rad, actuator slew 3.2 rad/s.
 # =============================================================================
@@ -70,49 +99,59 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, JointState
 from std_msgs.msg import Float32
 
 # --- Fixed vehicle geometry, do not tune -------------------------------------
 LIDAR_TO_BUMPER_M = 0.141      # 0.414 m bumper - 0.2733 m LiDAR mount
 CAR_HALF_WIDTH_M = 0.135       # 0.270 m overall width
 WHEELBASE_M = 0.324
+WHEEL_RADIUS_M = 0.0590
 MAX_STEER_RAD = 0.5236         # +/- 30 deg mechanical limit
 
 
 class GapFollower(Node):
-    """Reactive gap-following racing controller with pure pursuit steering."""
+    """Reactive gap-following racing controller with closed-loop speed."""
 
     def __init__(self):
         super().__init__('gap_follower')
 
         # --- Perception parameters -------------------------------------------
         self.declare_parameter('fov_deg', 90.0)
-        self.declare_parameter('horizon_m', 6.0)
+        self.declare_parameter('horizon_m', 8.0)
         self.declare_parameter('bubble_radius_m', 0.30)
         self.declare_parameter('clearance_margin_m', 0.055)
         self.declare_parameter('gap_threshold_m', 1.0)
         self.declare_parameter('min_gap_width_m', 0.45)
         self.declare_parameter('disparity_threshold_m', 0.35)
+        self.declare_parameter('front_cone_deg', 12.0)
 
         # --- Gap scoring weights ---------------------------------------------
         self.declare_parameter('w_depth', 1.0)
         self.declare_parameter('w_width', 0.5)
         self.declare_parameter('w_hysteresis', 1.5)
 
-        # --- Steering parameters ---------------------------------------------
-        self.declare_parameter('lookahead_gain', 0.6)
-        self.declare_parameter('lookahead_min_m', 0.8)
-        self.declare_parameter('lookahead_max_m', 3.0)
+        # --- Speed estimation -------------------------------------------------
+        self.declare_parameter('encoder_m_per_unit', WHEEL_RADIUS_M)
+        self.declare_parameter('speed_filter_tau_s', 0.15)
+
+        # --- Steering ---------------------------------------------------------
+        self.declare_parameter('lookahead_base_m', 0.7)
+        self.declare_parameter('lookahead_gain_s', 0.40)
+        self.declare_parameter('lookahead_min_m', 1.2)
+        self.declare_parameter('lookahead_max_m', 3.5)
         self.declare_parameter('steer_rate_rad_s', 3.0)
 
-        # --- Throttle parameters ---------------------------------------------
-        self.declare_parameter('throttle_cruise', 0.12)
-        self.declare_parameter('throttle_min', 0.03)
-        self.declare_parameter('clearance_full_m', 3.0)
-        self.declare_parameter('clearance_stop_m', 0.5)
-        self.declare_parameter('front_cone_deg', 12.0)
-        self.declare_parameter('steer_throttle_derate', 0.5)
+        # --- Speed control ----------------------------------------------------
+        self.declare_parameter('a_lat_max', 4.0)
+        self.declare_parameter('a_decel_max', 2.5)
+        self.declare_parameter('v_max', 5.0)
+        self.declare_parameter('v_min', 1.0)
+        self.declare_parameter('stop_margin_m', 0.4)
+        self.declare_parameter('throttle_ff', 0.042)
+        self.declare_parameter('throttle_kp', 0.10)
+        self.declare_parameter('throttle_max', 0.40)
+        self.declare_parameter('throttle_filter_tau_s', 0.10)
 
         self._reload_parameters()
 
@@ -120,6 +159,12 @@ class GapFollower(Node):
         self.prev_stamp_s = None
         self.prev_steer_rad = 0.0
         self.prev_bearing_rad = 0.0
+        self.throttle_filt = 0.0
+
+        self.speed_mps = 0.0
+        self.enc_prev_pos = None
+        self.enc_prev_stamp_s = None
+        self.last_log_s = 0.0
 
         # --- ROS interfaces ---------------------------------------------------
         qos = QoSProfile(
@@ -135,8 +180,11 @@ class GapFollower(Node):
 
         self.scan_sub = self.create_subscription(
             LaserScan, '/autodrive/roboracer_1/lidar', self.scan_callback, qos)
+        self.left_enc_sub = self.create_subscription(
+            JointState, '/autodrive/roboracer_1/left_encoder',
+            self.encoder_callback, qos)
 
-        self.get_logger().info('gap_follower v2 ready, waiting for laser scans')
+        self.get_logger().info('gap_follower v3 ready, waiting for laser scans')
 
     # -------------------------------------------------------------------------
     def _reload_parameters(self):
@@ -149,22 +197,68 @@ class GapFollower(Node):
         self.gap_threshold_m = g('gap_threshold_m').value
         self.min_gap_width_m = g('min_gap_width_m').value
         self.disparity_threshold_m = g('disparity_threshold_m').value
+        self.front_cone_rad = math.radians(g('front_cone_deg').value)
 
         self.w_depth = g('w_depth').value
         self.w_width = g('w_width').value
         self.w_hysteresis = g('w_hysteresis').value
 
-        self.lookahead_gain = g('lookahead_gain').value
+        self.encoder_m_per_unit = g('encoder_m_per_unit').value
+        self.speed_filter_tau_s = g('speed_filter_tau_s').value
+
+        self.lookahead_base_m = g('lookahead_base_m').value
+        self.lookahead_gain_s = g('lookahead_gain_s').value
         self.lookahead_min_m = g('lookahead_min_m').value
         self.lookahead_max_m = g('lookahead_max_m').value
         self.steer_rate_rad_s = g('steer_rate_rad_s').value
 
-        self.throttle_cruise = g('throttle_cruise').value
-        self.throttle_min = g('throttle_min').value
-        self.clearance_full_m = g('clearance_full_m').value
-        self.clearance_stop_m = g('clearance_stop_m').value
-        self.front_cone_rad = math.radians(g('front_cone_deg').value)
-        self.steer_throttle_derate = g('steer_throttle_derate').value
+        self.a_lat_max = g('a_lat_max').value
+        self.a_decel_max = g('a_decel_max').value
+        self.v_max = g('v_max').value
+        self.v_min = g('v_min').value
+        self.stop_margin_m = g('stop_margin_m').value
+        self.throttle_ff = g('throttle_ff').value
+        self.throttle_kp = g('throttle_kp').value
+        self.throttle_max = g('throttle_max').value
+        self.throttle_filter_tau_s = g('throttle_filter_tau_s').value
+
+    # -------------------------------------------------------------------------
+    def encoder_callback(self, msg: JointState):
+        """
+        Differentiate wheel encoder position to estimate forward speed.
+
+        The velocity field is not populated by the bridge, so the position
+        field is differenced against the previous sample. A first order
+        low-pass with a time constant in seconds smooths the result without
+        making it dependent on the message rate.
+        """
+        if not msg.position:
+            return
+
+        stamp_s = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        pos = float(msg.position[0])
+
+        if self.enc_prev_stamp_s is None:
+            self.enc_prev_stamp_s = stamp_s
+            self.enc_prev_pos = pos
+            return
+
+        dt = stamp_s - self.enc_prev_stamp_s
+        if dt <= 1e-4:
+            return
+
+        d_pos = pos - self.enc_prev_pos
+        self.enc_prev_stamp_s = stamp_s
+        self.enc_prev_pos = pos
+
+        raw = abs(d_pos) * self.encoder_m_per_unit / dt
+
+        # Reject impossible jumps, e.g. a counter reset after a collision.
+        if raw > 25.0:
+            return
+
+        alpha = dt / max(self.speed_filter_tau_s + dt, 1e-6)
+        self.speed_mps += alpha * (raw - self.speed_mps)
 
     # -------------------------------------------------------------------------
     def scan_callback(self, msg: LaserScan):
@@ -190,7 +284,6 @@ class GapFollower(Node):
         bearing_rad = self._select_gap(window, msg, lo)
 
         if bearing_rad is None:
-            # Fully enclosed. Hold the last heading and stop driving.
             self.get_logger().warn('no viable gap found, coasting',
                                    throttle_duration_sec=1.0)
             self._publish(self.prev_steer_rad / MAX_STEER_RAD, 0.0)
@@ -198,16 +291,20 @@ class GapFollower(Node):
 
         self.prev_bearing_rad = bearing_rad
 
+        # --- Steering ---------------------------------------------------------
         lookahead_m = float(np.clip(
-            clearance_m * self.lookahead_gain,
+            self.lookahead_base_m + self.lookahead_gain_s * self.speed_mps,
             self.lookahead_min_m,
             self.lookahead_max_m,
         ))
-
         target_steer_rad = self._pure_pursuit(bearing_rad, lookahead_m)
         steer_rad = self._rate_limit(target_steer_rad, dt)
-        throttle = self._throttle_for(clearance_m, steer_rad)
 
+        # --- Speed ------------------------------------------------------------
+        v_target = self._speed_target(target_steer_rad, clearance_m)
+        throttle = self._throttle_for(v_target, dt)
+
+        self._log_state(msg, v_target, lookahead_m)
         self._publish(steer_rad / MAX_STEER_RAD, throttle)
 
     # -------------------------------------------------------------------------
@@ -247,9 +344,8 @@ class GapFollower(Node):
     def _extend_disparities(self, window, angle_increment):
         """
         Where consecutive returns differ sharply, project the nearer surface
-        sideways by half the car width plus margin, so that a gap the vehicle
-        cannot physically fit through is never a candidate. This also closes
-        the apparent openings between the cylindrical track ducts.
+        sideways by half the car width plus margin, so a gap the vehicle cannot
+        physically fit through is never a candidate.
         """
         half_car = CAR_HALF_WIDTH_M + self.clearance_margin_m
         diffs = np.diff(window)
@@ -274,10 +370,10 @@ class GapFollower(Node):
         """
         Score every viable gap and return the aim bearing of the best one.
 
-        The score rewards depth and physical width, and penalises angular
+        The score rewards depth and physical width and penalises angular
         distance from the bearing chosen on the previous scan. Without that
-        penalty the choice flips between similar candidates on alternate
-        scans, which drives the steering into a full-lock limit cycle.
+        penalty the choice flips between similar candidates on alternate scans,
+        which excites a steering limit cycle.
         """
         free = window > self.gap_threshold_m
         if not free.any():
@@ -322,14 +418,14 @@ class GapFollower(Node):
 
     def _pure_pursuit(self, bearing_rad, lookahead_m):
         """
-        Geometric steering law for an Ackermann vehicle chasing an aim point
-        at bearing `bearing_rad` and distance `lookahead_m`:
+        Geometric steering law for an Ackermann vehicle chasing an aim point at
+        bearing `bearing_rad` and distance `lookahead_m`:
 
             delta = atan(2 * L * sin(alpha) / Ld)
 
-        Unlike a direct bearing-to-steer mapping this cannot demand more lock
-        than the geometry justifies, so wide aim bearings no longer saturate
-        the actuator.
+        With Ld floored at 1.2 m the argument cannot exceed 0.54, so the result
+        stays inside the 0.5236 rad mechanical limit for every bearing and the
+        actuator cannot be driven into saturation by geometry alone.
         """
         delta = math.atan2(2.0 * WHEELBASE_M * math.sin(bearing_rad), lookahead_m)
         return float(np.clip(delta, -MAX_STEER_RAD, MAX_STEER_RAD))
@@ -351,23 +447,58 @@ class GapFollower(Node):
             return self.horizon_m
         return float(np.min(ranges[lo:hi]))
 
-    def _throttle_for(self, clearance_m, steer_rad):
+    def _speed_target(self, steer_rad, clearance_m):
         """
-        Map forward clearance to a non-negative throttle, then derate for
-        steering angle so the car slows into corners. Negative throttle is
-        never emitted because it engages reverse rather than braking.
+        Smallest of three limits:
+
+          * Curvature limit. The instantaneous turn radius implied by the
+            steering angle is R = L / tan(delta), and holding lateral
+            acceleration below a_lat_max gives v = sqrt(a_lat_max * R).
+          * Clearance limit. With only idle braking torque available, the
+            speed from which the vehicle can still shed all its energy inside
+            the visible clearance is v = sqrt(2 * a_decel_max * distance).
+          * An absolute cap.
         """
-        if clearance_m <= self.clearance_stop_m:
-            return 0.0
+        tan_delta = abs(math.tan(steer_rad))
+        if tan_delta < 1e-3:
+            v_curve = self.v_max
+        else:
+            radius = WHEELBASE_M / tan_delta
+            v_curve = math.sqrt(self.a_lat_max * radius)
 
-        span = max(self.clearance_full_m - self.clearance_stop_m, 1e-3)
-        frac = float(np.clip((clearance_m - self.clearance_stop_m) / span, 0.0, 1.0))
-        throttle = self.throttle_min + frac * (self.throttle_cruise - self.throttle_min)
+        usable = max(clearance_m - self.stop_margin_m, 0.0)
+        v_clear = math.sqrt(2.0 * self.a_decel_max * usable)
 
-        steer_frac = abs(steer_rad) / MAX_STEER_RAD
-        throttle *= (1.0 - self.steer_throttle_derate * steer_frac)
+        return float(np.clip(min(v_curve, v_clear, self.v_max),
+                             0.0, self.v_max))
 
-        return max(throttle, 0.0)
+    def _throttle_for(self, v_target, dt):
+        """
+        Feedforward plus proportional speed control, low-pass filtered.
+
+        Throttle is a smooth function of speed error rather than a fast
+        function of scan geometry, which removes the throttle chatter that the
+        v2 steering-angle derate produced. Negative values are never emitted
+        because negative throttle engages reverse rather than braking; the
+        vehicle decelerates on idle torque alone.
+        """
+        raw = self.throttle_ff * v_target + self.throttle_kp * (v_target - self.speed_mps)
+        raw = float(np.clip(raw, 0.0, self.throttle_max))
+
+        alpha = dt / max(self.throttle_filter_tau_s + dt, 1e-6)
+        self.throttle_filt += alpha * (raw - self.throttle_filt)
+        return max(self.throttle_filt, 0.0)
+
+    def _log_state(self, msg, v_target, lookahead_m):
+        """Emit a one-line state summary about once per second."""
+        now_s = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if now_s - self.last_log_s < 1.0:
+            return
+        self.last_log_s = now_s
+        self.get_logger().info(
+            'v={:.2f} v_tgt={:.2f} Ld={:.2f} steer={:.3f} thr={:.3f}'.format(
+                self.speed_mps, v_target, lookahead_m,
+                self.prev_steer_rad, self.throttle_filt))
 
     def _publish(self, steer_norm, throttle):
         steer_msg = Float32()
@@ -387,7 +518,6 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        # Best effort: leave the vehicle stationary before the context closes.
         try:
             stop = Float32()
             stop.data = 0.0
