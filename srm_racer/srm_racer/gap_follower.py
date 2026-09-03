@@ -141,7 +141,7 @@ class GapFollower(Node):
         self.declare_parameter('w_hysteresis', 1.5)
 
         # --- Aim unwind limiting ------------------------------------------------
-        self.declare_parameter('aim_unwind_rate_rad_s', 1.2)
+        self.declare_parameter('aim_unwind_rate_rad_s', 100.0)
 
         # --- Speed estimation ---------------------------------------------------
         self.declare_parameter('encoder_m_per_unit', WHEEL_RADIUS_M)
@@ -158,14 +158,14 @@ class GapFollower(Node):
         self.declare_parameter('preview_distances', [1.2, 2.0, 2.8, 3.6, 4.5])
         self.declare_parameter('profile_fov_deg', 60.0)
         self.declare_parameter('a_lat_max', 7.0)
-        self.declare_parameter('a_decel_max', 3.0)
-        self.declare_parameter('v_max', 5.5)
+        self.declare_parameter('a_decel_max', 1.5)
+        self.declare_parameter('v_max', 4.0)
         self.declare_parameter('v_min', 1.5)
 
         # --- Throttle -----------------------------------------------------------
         self.declare_parameter('throttle_ff', 0.040)
         self.declare_parameter('throttle_kp', 0.14)
-        self.declare_parameter('throttle_max', 0.45)
+        self.declare_parameter('throttle_max', 0.25)
         self.declare_parameter('throttle_filter_tau_s', 0.10)
 
         self._reload_parameters()
