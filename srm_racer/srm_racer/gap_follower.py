@@ -116,9 +116,9 @@ class GapFollower(Node):
         self.declare_parameter('extend_margin_m', 0.10)
         self.declare_parameter('tie_tolerance_m', 0.50)
         self.declare_parameter('use_pure_pursuit', True)
-        self.declare_parameter('lookahead_m', 1.50)
+        self.declare_parameter('lookahead_m', 2.00)
         self.declare_parameter('steering_gain', 0.45)
-        self.declare_parameter('throttle', 0.10)
+        self.declare_parameter('throttle', 0.14)
 
         self._reload_parameters()
         self.last_log_s = 0.0
