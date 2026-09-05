@@ -118,7 +118,7 @@ class GapFollower(Node):
         self.declare_parameter('use_pure_pursuit', True)
         self.declare_parameter('lookahead_m', 2.00)
         self.declare_parameter('steering_gain', 0.45)
-        self.declare_parameter('throttle', 0.18)
+        self.declare_parameter('throttle', 0.14)
         self.declare_parameter('use_depth_throttle', False)
         self.declare_parameter('throttle_min', 0.09)
         self.declare_parameter('throttle_max', 0.26)
@@ -126,8 +126,6 @@ class GapFollower(Node):
         self.declare_parameter('depth_max_m', 6.0)
         self.declare_parameter('front_cone_deg', 15.0)
         self.declare_parameter('steer_derate', 0.55)
-        self.declare_parameter('path_half_width_m', 0.32)
-        self.declare_parameter('arc_max_m', 8.0)
 
         self._reload_parameters()
         self.last_log_s = 0.0
@@ -166,8 +164,6 @@ class GapFollower(Node):
         self.depth_max_m = g('depth_max_m').value
         self.front_cone_rad = math.radians(g('front_cone_deg').value)
         self.steer_derate = g('steer_derate').value
-        self.path_half_width_m = g('path_half_width_m').value
-        self.arc_max_m = g('arc_max_m').value
 
     def scan_callback(self, msg: LaserScan):
         """Main control loop, executed once per laser scan."""
@@ -184,7 +180,7 @@ class GapFollower(Node):
         target_rad = float(angles[best])
         steer_norm = self._steering_command(target_rad)
 
-        depth_m = self._path_depth(ranges, angles, steer_norm)
+        depth_m = self._front_depth(ranges, angles)
         throttle = self._throttle_for(depth_m, steer_norm)
 
         self._log_state(msg, target_rad, depth_m, steer_norm, throttle)
@@ -299,70 +295,6 @@ class GapFollower(Node):
             return float(np.min(ranges))
         return float(np.min(ranges[mask]))
 
-    def _path_depth(self, ranges, angles, steer_norm):
-        """
-        Free distance measured along the arc the vehicle is actually following.
-
-        Two earlier measures were tried and both are wrong in opposite ways.
-
-        Taking the range at the aim index is too optimistic: part way through a
-        corner the aim points at open track 40 to 58 degrees off axis, so the
-        reading saturates near the sensing horizon while the vehicle is still
-        turning. Logged telemetry showed 0.21 throttle at an aim bearing of
-        58 degrees, which is power on mid-corner, and produced repeated exit
-        collisions.
-
-        Taking the minimum over a cone fixed to the chassis is too pessimistic:
-        a cone locked to the current heading points straight at the outside
-        barrier through a corner, so depth collapsed below 0.5 m for much of
-        the lap and throttle pinned at its floor. Lap time regressed from 8.8 s
-        to 12.0 s.
-
-        The correct question is how far this vehicle can travel before the
-        corridor constrains it, and that depends on the path, not the heading.
-        The steering angle implies a turn radius R = L / tan(delta), so the
-        vehicle is following a circle of that radius centred abeam. A scan
-        point at range r and bearing theta lies at (r cos theta, r sin theta);
-        its distance from the arc centre determines whether the vehicle will
-        pass through it. Points whose radial offset from the arc exceeds half
-        the swept path width are missed and are ignored. Of the remainder, the
-        nearest measured along the arc is the true constraint.
-
-        As delta tends to zero the radius diverges and the test degenerates to
-        a straight corridor of the same width, which is the correct limiting
-        behaviour.
-        """
-        delta = steer_norm * MAX_STEER_RAD
-        tan_delta = math.tan(delta)
-
-        xs = ranges * np.cos(angles)
-        ys = ranges * np.sin(angles)
-
-        if abs(tan_delta) < 1e-3:
-            # Straight ahead: a rectangular corridor of the swept width.
-            on_path = (np.abs(ys) <= self.path_half_width_m) & (xs > 0.0)
-            if not on_path.any():
-                return self.arc_max_m
-            return float(np.clip(np.min(xs[on_path]), 0.0, self.arc_max_m))
-
-        radius = WHEELBASE_M / tan_delta          # signed; left turn positive
-        centre_y = radius
-
-        # Radial distance of each point from the arc centre.
-        offset = np.abs(np.hypot(xs, ys - centre_y) - abs(radius))
-        on_path = offset <= self.path_half_width_m
-
-        # Angle subtended from the centre, measured forward along the arc.
-        phi = np.arctan2(xs, np.sign(radius) * (centre_y - ys))
-        forward = phi > 0.0
-
-        valid = on_path & forward
-        if not valid.any():
-            return self.arc_max_m
-
-        arc_len = abs(radius) * phi[valid]
-        return float(np.clip(np.min(arc_len), 0.0, self.arc_max_m))
-
     def _throttle_for(self, depth_m, steer_norm):
         """
         Scale throttle with the free distance at the chosen heading.
@@ -389,14 +321,13 @@ class GapFollower(Node):
         and depth_max_m should be set so that throttle is already falling
         while the corner is still several metres away.
         """
-        if self.use_depth_throttle:
-            span = max(self.depth_max_m - self.depth_min_m, 1e-3)
-            frac = (depth_m - self.depth_min_m) / span
-            frac = float(np.clip(frac, 0.0, 1.0))
-            throttle = self.throttle_min + frac * (
-                self.throttle_max - self.throttle_min)
-        else:
-            throttle = self.throttle
+        if not self.use_depth_throttle:
+            return self.throttle
+
+        span = max(self.depth_max_m - self.depth_min_m, 1e-3)
+        frac = (depth_m - self.depth_min_m) / span
+        frac = float(np.clip(frac, 0.0, 1.0))
+        throttle = self.throttle_min + frac * (self.throttle_max - self.throttle_min)
 
         # Cut power in proportion to steering angle. The lateral tire curve
         # peaks at 0.01 slip and has halved by 0.10, so this vehicle has a very
