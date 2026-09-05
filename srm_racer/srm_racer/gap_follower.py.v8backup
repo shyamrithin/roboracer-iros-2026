@@ -119,13 +119,6 @@ class GapFollower(Node):
         self.declare_parameter('lookahead_m', 2.00)
         self.declare_parameter('steering_gain', 0.45)
         self.declare_parameter('throttle', 0.14)
-        self.declare_parameter('use_depth_throttle', False)
-        self.declare_parameter('throttle_min', 0.09)
-        self.declare_parameter('throttle_max', 0.26)
-        self.declare_parameter('depth_min_m', 2.0)
-        self.declare_parameter('depth_max_m', 6.0)
-        self.declare_parameter('front_cone_deg', 15.0)
-        self.declare_parameter('steer_derate', 0.55)
 
         self._reload_parameters()
         self.last_log_s = 0.0
@@ -157,13 +150,6 @@ class GapFollower(Node):
         self.lookahead_m = g('lookahead_m').value
         self.steering_gain = g('steering_gain').value
         self.throttle = g('throttle').value
-        self.use_depth_throttle = g('use_depth_throttle').value
-        self.throttle_min = g('throttle_min').value
-        self.throttle_max = g('throttle_max').value
-        self.depth_min_m = g('depth_min_m').value
-        self.depth_max_m = g('depth_max_m').value
-        self.front_cone_rad = math.radians(g('front_cone_deg').value)
-        self.steer_derate = g('steer_derate').value
 
     def scan_callback(self, msg: LaserScan):
         """Main control loop, executed once per laser scan."""
@@ -180,11 +166,8 @@ class GapFollower(Node):
         target_rad = float(angles[best])
         steer_norm = self._steering_command(target_rad)
 
-        depth_m = self._front_depth(ranges, angles)
-        throttle = self._throttle_for(depth_m, steer_norm)
-
-        self._log_state(msg, target_rad, depth_m, steer_norm, throttle)
-        self._publish(steer_norm, throttle)
+        self._log_state(msg, target_rad, float(ranges[best]), steer_norm)
+        self._publish(steer_norm, self.throttle)
 
     def _prepare(self, msg):
         """
@@ -274,69 +257,7 @@ class GapFollower(Node):
 
         return float(np.clip(delta / MAX_STEER_RAD, -1.0, 1.0))
 
-    def _front_depth(self, ranges, angles):
-        """
-        Minimum free distance inside a narrow cone straight ahead.
-
-        Depth at the aim index is the wrong input for a speed decision. Part
-        way through a corner the aim points at open track 40 to 58 degrees off
-        axis, so that reading saturates near the sensing horizon while the
-        vehicle is still turning, and the throttle ramp responds as though the
-        road were straight. Logged telemetry showed 0.21 throttle at an aim
-        bearing of 58 degrees, which is power on mid-corner and produced
-        repeated exit collisions.
-
-        Taking the minimum over a narrow forward cone answers the question the
-        speed controller actually needs: how far can this vehicle travel along
-        its current heading before the corridor constrains it.
-        """
-        mask = np.abs(angles) <= self.front_cone_rad
-        if not mask.any():
-            return float(np.min(ranges))
-        return float(np.min(ranges[mask]))
-
-    def _throttle_for(self, depth_m, steer_norm):
-        """
-        Scale throttle with the free distance at the chosen heading.
-
-        After disparity extension the depth at the aim index measures how far
-        the vehicle can travel before the corridor constrains it: on a straight
-        it saturates at the sensing horizon, and entering a corner it
-        collapses. Ramping throttle linearly between two depth thresholds
-        therefore brakes on corner approach and accelerates on exit, using
-        nothing but the current scan.
-
-        This is deliberately open loop. An earlier revision derived a speed
-        target from the steering angle and closed a loop on measured speed,
-        which coupled speed to lookahead to aim bearing to curvature and back
-        to speed; logged throttle showed a self-sustaining oscillation of about
-        0.8 s that no amount of filtering or rate limiting removed. Here the
-        command depends only on the scan, so there is no path from the
-        vehicle's own motion back into its own command and the loop cannot
-        close.
-
-        Negative throttle is never emitted because it engages reverse rather
-        than braking on this vehicle. Deceleration is by idle torque alone,
-        which is why the ramp must begin well before the corner: depth_min_m
-        and depth_max_m should be set so that throttle is already falling
-        while the corner is still several metres away.
-        """
-        if not self.use_depth_throttle:
-            return self.throttle
-
-        span = max(self.depth_max_m - self.depth_min_m, 1e-3)
-        frac = (depth_m - self.depth_min_m) / span
-        frac = float(np.clip(frac, 0.0, 1.0))
-        throttle = self.throttle_min + frac * (self.throttle_max - self.throttle_min)
-
-        # Cut power in proportion to steering angle. The lateral tire curve
-        # peaks at 0.01 slip and has halved by 0.10, so this vehicle has a very
-        # narrow grip window; applying drive torque while cornering hard pushes
-        # it past the peak and the car runs wide on exit.
-        throttle *= (1.0 - self.steer_derate * abs(steer_norm))
-        return max(throttle, 0.0)
-
-    def _log_state(self, msg, target_rad, depth_m, steer_norm, throttle):
+    def _log_state(self, msg, target_rad, depth_m, steer_norm):
         """Emit a one-line state summary about once per second."""
         now_s = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if now_s - self.last_log_s < 1.0:
@@ -344,7 +265,7 @@ class GapFollower(Node):
         self.last_log_s = now_s
         self.get_logger().info(
             'aim={:+.3f} rad  depth={:.2f} m  steer={:+.3f}  thr={:.3f}'.format(
-                target_rad, depth_m, steer_norm, throttle))
+                target_rad, depth_m, steer_norm, self.throttle))
 
     def _publish(self, steer_norm, throttle):
         steer_msg = Float32()
