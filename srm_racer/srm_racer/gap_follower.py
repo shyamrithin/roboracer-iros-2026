@@ -112,8 +112,8 @@ class GapFollower(Node):
 
         self.declare_parameter('fov_deg', 60.0)
         self.declare_parameter('horizon_m', 8.0)
-        self.declare_parameter('disparity_threshold_m', 0.30)
-        self.declare_parameter('extend_margin_m', 0.10)
+        self.declare_parameter('disparity_threshold_m', 0.20)
+        self.declare_parameter('extend_margin_m', 0.16)
         self.declare_parameter('tie_tolerance_m', 0.50)
         self.declare_parameter('use_pure_pursuit', True)
         self.declare_parameter('lookahead_m', 2.00)
