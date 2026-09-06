@@ -129,6 +129,9 @@ class GapFollower(Node):
         self.declare_parameter('derate_exponent', 1.0)
         self.declare_parameter('path_half_width_m', 0.32)
         self.declare_parameter('arc_max_m', 8.0)
+        self.declare_parameter('bias_side_deg', 55.0)
+        self.declare_parameter('bias_window_deg', 25.0)
+        self.declare_parameter('bias_gain', 0.0)  # disabled: see _corridor_bias
 
         self._reload_parameters()
         self.last_log_s = 0.0
@@ -170,6 +173,9 @@ class GapFollower(Node):
         self.derate_exponent = g('derate_exponent').value
         self.path_half_width_m = g('path_half_width_m').value
         self.arc_max_m = g('arc_max_m').value
+        self.bias_side_rad = math.radians(g('bias_side_deg').value)
+        self.bias_window_rad = math.radians(g('bias_window_deg').value)
+        self.bias_gain = g('bias_gain').value
 
     def scan_callback(self, msg: LaserScan):
         """Main control loop, executed once per laser scan."""
@@ -182,14 +188,17 @@ class GapFollower(Node):
 
         self._extend_disparities(ranges, msg.angle_increment)
 
+        bias_rad, free_l, free_r = self._corridor_bias(ranges, angles)
+
         best = self._select_heading(ranges, angles)
-        target_rad = float(angles[best])
+        target_rad = float(angles[best]) + bias_rad
         steer_norm = self._steering_command(target_rad)
 
         depth_m = self._path_depth(ranges, angles, steer_norm)
         throttle = self._throttle_for(depth_m, steer_norm)
 
-        self._log_state(msg, target_rad, depth_m, steer_norm, throttle)
+        self._log_state(msg, target_rad, depth_m, steer_norm, throttle,
+                        bias_rad, free_l, free_r)
         self._publish(steer_norm, throttle)
 
     def _prepare(self, msg):
@@ -300,6 +309,52 @@ class GapFollower(Node):
         if not mask.any():
             return float(np.min(ranges))
         return float(np.min(ranges[mask]))
+
+    def _corridor_bias(self, ranges, angles):
+        """
+        Measure the lateral asymmetry of the corridor and derive a steering
+        bias from it. DIAGNOSTIC ONLY at bias_gain 0.0.
+
+        A gap follower that aims at the deepest visible point traces a path
+        near the centre of the corridor. That is not a racing line: a racing
+        line runs wide on entry, tightens to an apex, and opens out again on
+        exit, so that the vehicle is close to straight for much of the corner.
+        Logged telemetry shows the present aim bearing sitting between 0.4 and
+        0.9 rad almost continuously, meaning the vehicle is steering, and
+        therefore derating throttle, essentially all the time.
+
+        The corner geometry cannot be known ahead of time from an 8 m scan, but
+        its asymmetry can be measured. Free distance is averaged over a window
+        centred on +bias_side_deg (left) and again on -bias_side_deg (right).
+        Approaching a right hand corner the left side is the more open of the
+        two, at the apex the two are comparable and both short, and on exit the
+        right opens up again. The normalised difference
+
+            bias = (free_left - free_right) / (free_left + free_right)
+
+        is therefore positive when the open space lies to the left, negative
+        when it lies to the right, and near zero on a straight or at an apex.
+        Adding a multiple of it to the aim bearing pushes the vehicle toward
+        the outside of the corner on entry and lets it run out again on exit.
+
+        Returns the bias in radians together with the two raw averages, so the
+        measure can be validated against observed behaviour before it is given
+        any authority over steering.
+        """
+        half = self.bias_window_rad
+
+        left = np.abs(angles - self.bias_side_rad) <= half
+        right = np.abs(angles + self.bias_side_rad) <= half
+
+        free_l = float(np.mean(ranges[left])) if left.any() else 0.0
+        free_r = float(np.mean(ranges[right])) if right.any() else 0.0
+
+        total = free_l + free_r
+        if total < 1e-3:
+            return 0.0, free_l, free_r
+
+        normalised = (free_l - free_r) / total
+        return self.bias_gain * normalised, free_l, free_r
 
     def _path_depth(self, ranges, angles, steer_norm):
         """
@@ -417,15 +472,18 @@ class GapFollower(Node):
         throttle *= max(1.0 - cut, 0.0)
         return max(throttle, 0.0)
 
-    def _log_state(self, msg, target_rad, depth_m, steer_norm, throttle):
+    def _log_state(self, msg, target_rad, depth_m, steer_norm, throttle,
+                   bias_rad=0.0, free_l=0.0, free_r=0.0):
         """Emit a one-line state summary about once per second."""
         now_s = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if now_s - self.last_log_s < 1.0:
             return
         self.last_log_s = now_s
         self.get_logger().info(
-            'aim={:+.3f} rad  depth={:.2f} m  steer={:+.3f}  thr={:.3f}'.format(
-                target_rad, depth_m, steer_norm, throttle))
+            'aim={:+.3f}  steer={:+.3f}  thr={:.3f}  '
+            'L={:.2f} R={:.2f} bias={:+.3f}'.format(
+                target_rad, steer_norm, throttle,
+                free_l, free_r, bias_rad))
 
     def _publish(self, steer_norm, throttle):
         steer_msg = Float32()
