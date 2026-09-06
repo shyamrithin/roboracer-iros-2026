@@ -126,6 +126,7 @@ class GapFollower(Node):
         self.declare_parameter('depth_max_m', 6.0)
         self.declare_parameter('front_cone_deg', 15.0)
         self.declare_parameter('steer_derate', 1.0)
+        self.declare_parameter('derate_exponent', 1.0)
         self.declare_parameter('path_half_width_m', 0.32)
         self.declare_parameter('arc_max_m', 8.0)
 
@@ -166,6 +167,7 @@ class GapFollower(Node):
         self.depth_max_m = g('depth_max_m').value
         self.front_cone_rad = math.radians(g('front_cone_deg').value)
         self.steer_derate = g('steer_derate').value
+        self.derate_exponent = g('derate_exponent').value
         self.path_half_width_m = g('path_half_width_m').value
         self.arc_max_m = g('arc_max_m').value
 
@@ -398,11 +400,21 @@ class GapFollower(Node):
         else:
             throttle = self.throttle
 
-        # Cut power in proportion to steering angle. The lateral tire curve
-        # peaks at 0.01 slip and has halved by 0.10, so this vehicle has a very
-        # narrow grip window; applying drive torque while cornering hard pushes
-        # it past the peak and the car runs wide on exit.
-        throttle *= (1.0 - self.steer_derate * abs(steer_norm))
+        # Cut power with steering angle, raised to an exponent.
+        #
+        # A linear derate penalises every correction equally, so the small
+        # inputs used to hold a straight line cost real speed: logged telemetry
+        # showed a commanded 0.22 delivered as 0.179 at only 0.10 rad of steer.
+        # Raising the normalised steering to a power leaves those corrections
+        # nearly untouched while preserving the full cut at lock. At exponent
+        # 2.0 a tenth of lock costs one per cent instead of ten, and full lock
+        # still yields zero throttle.
+        #
+        # The cut is needed at all because the lateral tire curve peaks at 0.01
+        # slip and has halved by 0.10, so applying drive torque while cornering
+        # hard pushes the vehicle past the grip peak and it runs wide on exit.
+        cut = self.steer_derate * (abs(steer_norm) ** self.derate_exponent)
+        throttle *= max(1.0 - cut, 0.0)
         return max(throttle, 0.0)
 
     def _log_state(self, msg, target_rad, depth_m, steer_norm, throttle):
