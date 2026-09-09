@@ -129,6 +129,7 @@ class GapFollower(Node):
         self.declare_parameter('derate_exponent', 1.0)
         self.declare_parameter('path_half_width_m', 0.32)
         self.declare_parameter('arc_max_m', 8.0)
+        self.declare_parameter('log_period_s', 1.0)
         self.declare_parameter('bias_side_deg', 55.0)
         self.declare_parameter('bias_window_deg', 25.0)
         self.declare_parameter('bias_gain', 0.0)  # disabled: see _corridor_bias
@@ -173,6 +174,7 @@ class GapFollower(Node):
         self.derate_exponent = g('derate_exponent').value
         self.path_half_width_m = g('path_half_width_m').value
         self.arc_max_m = g('arc_max_m').value
+        self.log_period_s = g('log_period_s').value
         self.bias_side_rad = math.radians(g('bias_side_deg').value)
         self.bias_window_rad = math.radians(g('bias_window_deg').value)
         self.bias_gain = g('bias_gain').value
@@ -476,13 +478,13 @@ class GapFollower(Node):
                    bias_rad=0.0, free_l=0.0, free_r=0.0):
         """Emit a one-line state summary about once per second."""
         now_s = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
-        if now_s - self.last_log_s < 1.0:
+        if now_s - self.last_log_s < self.log_period_s:
             return
         self.last_log_s = now_s
         self.get_logger().info(
-            'aim={:+.3f}  steer={:+.3f}  thr={:.3f}  '
+            'aim={:+.3f}  steer={:+.3f}  thr={:.3f}  depth={:.2f}  '
             'L={:.2f} R={:.2f} bias={:+.3f}'.format(
-                target_rad, steer_norm, throttle,
+                target_rad, steer_norm, throttle, depth_m,
                 free_l, free_r, bias_rad))
 
     def _publish(self, steer_norm, throttle):
