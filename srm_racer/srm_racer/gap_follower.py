@@ -129,6 +129,10 @@ class GapFollower(Node):
         self.declare_parameter('derate_exponent', 1.0)
         self.declare_parameter('path_half_width_m', 0.32)
         self.declare_parameter('arc_max_m', 8.0)
+        self.declare_parameter('min_preview_radius_m', 3.0)
+        self.declare_parameter('min_arc_m', 0.25)
+        self.declare_parameter('centre_cone_deg', 4.0)
+        self.declare_parameter('aim_cone_deg', 6.0)
         self.declare_parameter('log_period_s', 1.0)
         self.declare_parameter('bias_side_deg', 55.0)
         self.declare_parameter('bias_window_deg', 25.0)
@@ -136,6 +140,9 @@ class GapFollower(Node):
 
         self._reload_parameters()
         self.last_log_s = 0.0
+        self.depth_v2 = 0.0
+        self.depth_cone = 0.0
+        self.depth_aim = 0.0
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -174,6 +181,10 @@ class GapFollower(Node):
         self.derate_exponent = g('derate_exponent').value
         self.path_half_width_m = g('path_half_width_m').value
         self.arc_max_m = g('arc_max_m').value
+        self.min_preview_radius_m = g('min_preview_radius_m').value
+        self.min_arc_m = g('min_arc_m').value
+        self.centre_cone_rad = math.radians(g('centre_cone_deg').value)
+        self.aim_cone_rad = math.radians(g('aim_cone_deg').value)
         self.log_period_s = g('log_period_s').value
         self.bias_side_rad = math.radians(g('bias_side_deg').value)
         self.bias_window_rad = math.radians(g('bias_window_deg').value)
@@ -358,7 +369,7 @@ class GapFollower(Node):
         normalised = (free_l - free_r) / total
         return self.bias_gain * normalised, free_l, free_r
 
-    def _path_depth(self, ranges, angles, steer_norm):
+    def _path_depth_v1(self, ranges, angles, steer_norm):
         """
         Free distance measured along the arc the vehicle is actually following.
 
@@ -422,6 +433,121 @@ class GapFollower(Node):
         arc_len = abs(radius) * phi[valid]
         return float(np.clip(np.min(arc_len), 0.0, self.arc_max_m))
 
+    def _path_depth_v2(self, ranges, angles, steer_norm):
+        """
+        Corrected free distance along the arc the vehicle is following.
+
+        Differs from _path_depth in three ways; see the revision notes for the
+        evidence behind each.
+
+        First, the bumper offset is treated as a translation rather than a
+        radial shrink. _prepare returns bumper-referenced ranges, so the raw
+        range is recovered before converting to Cartesian and the offset is
+        then applied along x only. Points with x <= 0 lie behind the bumper
+        plane and are discarded rather than counted as obstacles ahead.
+
+        Second, the projection radius is floored. The instantaneous radius
+        R = L / tan(delta) reaches 1.16 m at the lock this vehicle actually
+        uses, and a circle that tight fits inside the corridor without
+        touching it, so no constraint is found and the measure saturates. Over
+        a preview of several metres the steering will change substantially, so
+        a floored radius is the better model of average curvature.
+
+        Third, constraints closer than min_arc_m are ignored, so the vehicle's
+        own wheels and bodywork cannot pin the measure at zero.
+        """
+        # --- true Cartesian relative to the front bumper --------------------
+        r_raw = ranges + LIDAR_TO_BUMPER_M
+        xs = r_raw * np.cos(angles) - LIDAR_TO_BUMPER_M
+        ys = r_raw * np.sin(angles)
+
+        ahead = xs > 0.0
+        if not ahead.any():
+            return self.arc_max_m
+
+        delta = steer_norm * MAX_STEER_RAD
+        tan_delta = math.tan(delta)
+
+        if abs(tan_delta) < 1e-3:
+            on_path = ahead & (np.abs(ys) <= self.path_half_width_m)
+            if not on_path.any():
+                return self.arc_max_m
+            d = xs[on_path]
+            d = d[d >= self.min_arc_m]
+            if d.size == 0:
+                return self.arc_max_m
+            return float(np.clip(np.min(d), 0.0, self.arc_max_m))
+
+        radius = WHEELBASE_M / tan_delta          # signed; left turn positive
+        if abs(radius) < self.min_preview_radius_m:
+            radius = math.copysign(self.min_preview_radius_m, radius)
+        centre_y = radius
+
+        offset = np.abs(np.hypot(xs, ys - centre_y) - abs(radius))
+        on_path = ahead & (offset <= self.path_half_width_m)
+
+        phi = np.arctan2(xs, np.sign(radius) * (centre_y - ys))
+        valid = on_path & (phi > 0.0)
+        if not valid.any():
+            return self.arc_max_m
+
+        arc_len = abs(radius) * phi[valid]
+        arc_len = arc_len[arc_len >= self.min_arc_m]
+        if arc_len.size == 0:
+            return self.arc_max_m
+        return float(np.clip(np.min(arc_len), 0.0, self.arc_max_m))
+
+    def _aim_from_steer(self, steer_norm):
+        """
+        Recover the aim bearing from the steering command.
+
+        Pure pursuit gives delta = atan(2 L sin(alpha) / Ld), so
+        sin(alpha) = tan(delta) Ld / (2 L). Inverting here avoids changing
+        the scan_callback signature. Verified against logged telemetry: a
+        command of 0.519 recovers 1.036 rad against a logged aim of 1.034.
+        """
+        if not self.use_pure_pursuit:
+            return steer_norm * MAX_STEER_RAD / max(self.steering_gain, 1e-6)
+        delta = steer_norm * MAX_STEER_RAD
+        s = math.tan(delta) * self.lookahead_m / (2.0 * WHEELBASE_M)
+        return float(math.asin(float(np.clip(s, -1.0, 1.0))))
+
+    def _depth_cone(self, ranges, angles, centre_rad, half_width_rad):
+        """
+        Minimum bumper-referenced range inside a wedge about a bearing.
+
+        Used for two of the candidate measures: a narrow wedge straight ahead,
+        which is the quantity the simulator HUD reports as a single LiDAR
+        measurement, and a wedge about the aim bearing.
+        """
+        mask = np.abs(angles - centre_rad) <= half_width_rad
+        if not mask.any():
+            return self.arc_max_m
+        return float(np.clip(np.min(ranges[mask]), 0.0, self.arc_max_m))
+
+    def _path_depth(self, ranges, angles, steer_norm):
+        """
+        Comparison wrapper. Computes four candidate depth measures, stores
+        three of them for logging, and returns the ORIGINAL so the control
+        path is unchanged while all four are compared on the same runs.
+
+          d1  original arc projection
+          d2  corrected arc projection
+          dc  narrow wedge straight ahead
+          da  wedge about the aim bearing
+
+        A usable measure must fall as the corridor closes AND lead the
+        steering, so that throttle is already dropping while the corner is
+        still several metres away. Deceleration is by idle torque alone.
+        """
+        self.depth_v2 = self._path_depth_v2(ranges, angles, steer_norm)
+        self.depth_cone = self._depth_cone(
+            ranges, angles, 0.0, self.centre_cone_rad)
+        self.depth_aim = self._depth_cone(
+            ranges, angles, self._aim_from_steer(steer_norm),
+            self.aim_cone_rad)
+        return self._path_depth_v1(ranges, angles, steer_norm)
+
     def _throttle_for(self, depth_m, steer_norm):
         """
         Scale throttle with the free distance at the chosen heading.
@@ -482,9 +608,12 @@ class GapFollower(Node):
             return
         self.last_log_s = now_s
         self.get_logger().info(
-            'aim={:+.3f}  steer={:+.3f}  thr={:.3f}  depth={:.2f}  '
+            'aim={:+.3f}  steer={:+.3f}  thr={:.3f}  '
+            'd1={:.2f} d2={:.2f} dc={:.2f} da={:.2f}  '
             'L={:.2f} R={:.2f} bias={:+.3f}'.format(
-                target_rad, steer_norm, throttle, depth_m,
+                target_rad, steer_norm, throttle,
+                depth_m, self.depth_v2, self.depth_cone,
+                self.depth_aim,
                 free_l, free_r, bias_rad))
 
     def _publish(self, steer_norm, throttle):
