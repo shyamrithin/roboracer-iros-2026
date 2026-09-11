@@ -1,0 +1,114 @@
+# =============================================================================
+# porto_localization.yaml
+# -----------------------------------------------------------------------------
+# Project : RoboRacer Sim Racing League @ IROS 2026 - Team CEM Navigators (26)
+# Author  : Shyam Rithin
+# Location: ~/roboracer/tools/porto_localization.yaml
+# Usage   : ros2 launch slam_toolbox localization_launch.py \
+#             slam_params_file:=$HOME/roboracer/tools/porto_localization.yaml
+# =============================================================================
+#
+# slam_toolbox in LOCALIZATION mode against the saved Porto pose graph. The
+# map is not modified; the node matches incoming scans against the stored
+# graph and publishes the map -> odom correction.
+#
+# TWO-STAGE TEST, AND WHY IT MATTERS
+#
+#   Stage 1 (this file, as configured): odometry comes from the simulator's
+#   ground-truth /odom via slam_bridge.py. This only proves the pipeline
+#   works - map loads, scan matching runs, map -> odom publishes. It is NOT a
+#   race-representative test, because ground-truth odometry is close to
+#   perfect and the scan matcher is barely being asked to do anything.
+#
+#   Stage 2: odometry must come from dead reckoning (encoders plus IMU yaw).
+#   The rule book restricts ips, odom, tf, lap and collision telemetry, and
+#   reset_command at run time, so ground truth is unavailable during a race.
+#   Stage 2 is the real test and the one that decides whether any of this
+#   reaches the car.
+#
+# WHAT TO MEASURE
+#   With ground truth still available for validation only, compare the pose
+#   slam_toolbox reports against /odom. Under 0.20 m is the Sep 12 gate.
+#   Watch particularly along the straights: a corridor circuit constrains a
+#   scan matcher well laterally and poorly longitudinally, so drift along the
+#   track is the expected failure and the one to look for.
+#
+# MAP FILE
+#   map_file_name points at the serialized pose graph WITHOUT its extension.
+#   slam_toolbox appends .posegraph and .data itself. These files are ~110 MB
+#   together and are deliberately kept out of git; they live in ~/mapdata.
+# =============================================================================
+
+slam_toolbox:
+  ros__parameters:
+
+    # ---- Plugins ----
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ---- Mode and map ----
+    mode: localization
+    map_file_name: /home/shyam/mapdata/porto_graph
+    map_start_pose: [0.5407, 3.1763, -1.6127]
+
+    # ---- Frames and topics ----
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link
+    scan_topic: /scan
+
+    debug_logging: false
+    throttle_scans: 1
+    transform_publish_period: 0.02
+    map_update_interval: 1.0
+    resolution: 0.05
+    max_laser_range: 10.0
+    minimum_time_interval: 0.1
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000
+
+    # ---- Matching ----
+    # Denser than the mapping config: in localization the cost of matching
+    # more often is small, and a 36 m circuit at racing speed gives few
+    # opportunities to correct.
+    use_scan_matching: true
+    use_scan_barycenter: true
+    minimum_travel_distance: 0.05
+    minimum_travel_heading: 0.05
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+
+    # ---- Loop closure (localization still benefits from revisits) ----
+    do_loop_closing: true
+    loop_search_maximum_distance: 3.0
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+    # ---- Correlation search, coarse ----
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    # ---- Correlation search, loop closure ----
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # ---- Scan matcher ----
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
+    fine_search_angle_offset: 0.00349
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution: 0.0349
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
