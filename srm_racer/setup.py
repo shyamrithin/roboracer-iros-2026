@@ -40,6 +40,7 @@ setup(
         'console_scripts': [
             'gap_follower = srm_racer.gap_follower:main',
             'dead_reckoning = srm_racer.dead_reckoning:main',
+            'coastdown = srm_racer.coastdown:main',
         ],
     },
 )
