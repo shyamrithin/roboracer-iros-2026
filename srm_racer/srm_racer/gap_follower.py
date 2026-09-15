@@ -8,6 +8,9 @@
 # Revised     : 2026-09-04  (v7: clean canonical disparity extender)
 # Revised     : 2026-09-04  (v8: pure pursuit steering law, central tie-break
 #                            among near-maximal headings)
+# Revised     : 2026-09-15  (v9: Phase 2 competition track defaults; six
+#                            parameter changes, no algorithmic change)
+# Revised     : 2026-09-15  (v10: selectable depth source and speed law)
 # =============================================================================
 # CODE DESCRIPTION
 # -----------------------------------------------------------------------------
@@ -17,6 +20,187 @@
 # stored knowledge of the circuit, and no ground-truth pose, so the behaviour
 # transfers unchanged to an unseen racetrack. The core method is due to
 # Otterness (UNC-Chapel Hill, 2019).
+#
+# REVISION NOTES (v10)
+# -----------------------------------------------------------------------------
+# DEFAULT BEHAVIOUR IS UNCHANGED FROM v9. depth_law defaults to 'off', which
+# takes the same constant-throttle path v9 took. Everything below activates
+# only when depth_law is set to 'ramp' or 'sqrt'.
+#
+# WHY
+#   v9 runs a constant 0.10 throttle everywhere. On the Phase 2 track the
+#   bridge deck logs dc at 5.5-6.5 m of clear road for roughly a quarter of a
+#   47.8 m lap, all of it at 10 per cent throttle in a vehicle that held
+#   5.4 m/s on 22 per cent. The straights are where the lap time is.
+#
+# 1. depth_source  (d1 | d2 | dc | da, default dc)
+#    _path_depth previously returned d1 unconditionally. The four-way
+#    comparison run measured d1 at +0.193 correlation with speed - INVERTED,
+#    reading deeper when the vehicle is slower - with 23.2 per cent of samples
+#    pinned at the 8.00 m horizon and 15.8 per cent below 0.3 m. Feeding that
+#    to any speed law would accelerate INTO corners. dc, the narrow forward
+#    wedge, measured -0.727 with no saturation at either end and a median of
+#    3.38 m on the straight against 1.33 m in corners. On the Phase 2 track it
+#    separates even more cleanly: 5.5-6.5 straight, 0.3-0.9 in corners.
+#    All four are still computed and logged; only the returned one changes.
+#
+# 2. depth_law = 'ramp'
+#    Linear interpolation from throttle_min at depth_min_m to throttle_max at
+#    depth_max_m. Two tuned endpoints, no physics. This is the mechanism that
+#    already existed behind use_depth_throttle, now reachable and fed a working
+#    depth measure.
+#
+# 3. depth_law = 'sqrt'
+#    v = sqrt(2 * a * d), the fastest speed from which the vehicle can still
+#    stop inside the clearance it can see, then converted to a throttle command
+#    through speed_per_throttle. Physically grounded rather than tuned, and the
+#    right shape for a vehicle with no brake. Predicted from current logs:
+#        dc 5.5 -> 6.7 m/s -> 0.275 throttle
+#        dc 3.0 -> 4.8 m/s -> 0.198
+#        dc 0.5 -> 1.3 m/s -> 0.054
+#    Compare against the ramp at the same points: near-identical at 3.0 m,
+#    markedly more cautious close in. Both are clipped to throttle_min and
+#    throttle_max.
+#
+# 4. throttle_floor (default 0.05, applied only when a law is active)
+#    At full lock steer_derate 0.7 leaves 30 per cent of a base the law may
+#    already have cut to near zero. v8 showed what that produces: 0.011
+#    throttle, nose against the wall at 0.26 m/s, no drive to rotate out.
+#    The floor is applied after the derate so a corner can always be exited.
+#
+# HOW TO TEST
+#   Baseline, must reproduce v9 exactly (8 laps, 0 collisions, 21.7 s):
+#     ros2 run srm_racer gap_follower
+#
+#   Braking-distance law, conservative first pass:
+#     ros2 run srm_racer gap_follower --ros-args \
+#       -p depth_law:=sqrt -p throttle_max:=0.20
+#   then raise throttle_max in steps: 0.20, 0.24, 0.28.
+#
+#   Linear ramp, for comparison on the same track:
+#     ros2 run srm_racer gap_follower --ros-args \
+#       -p depth_law:=ramp -p depth_min_m:=1.0 -p depth_max_m:=5.0 \
+#       -p throttle_min:=0.10 -p throttle_max:=0.20
+#
+#   One parameter per run, 15+ laps, record. Watch the final turn: it already
+#   passes as close as R=0.04 m and is the first thing that will fail.
+#
+# MEASURED ON THE PHASE 2 TRACK, 2026-09-15
+# -----------------------------------------------------------------------------
+#   depth_law off  (v9 defaults) .............. 21.7 s, 8 laps, 0 collisions
+#   sqrt, tmax 0.16, margin 1.2, derate 0.85 .. 17.8 s, 8 laps, 0 collisions
+#   sqrt, tmax 0.18, + bias_gain 0.20 ......... 17.5 s, clips the final turn
+#   sqrt, tmax 0.20, + bias_gain 0.20 ......... 16.9 s, clips the final turn
+#
+#   BEST CLEAN CONFIGURATION IS THE 0.16 ROW. A collision costs +10 s, so a
+#   clipped 16.9 scores 26.9 against a clean 17.8. Do not submit a clipping
+#   configuration.
+#
+#   bias_gain 0.35 (tuned at 0.10 throttle) caused sustained weaving on the
+#   straights at tmax 0.20: L and R swapped sides sample to sample and the
+#   vehicle held ~15 per cent throttle instead of 20. The correction is a
+#   steering angle and the displacement it produces scales with v^2, so the
+#   gain does about four times the work at double the speed. 0.20 settled it.
+#
+#   depth_source da was tried for its lead time and is WORSE: throttle went
+#   0.181 0.127 0.171 0.160 0.124 0.050 on consecutive samples. da is a wedge
+#   about the AIM bearing, so it is a function of steering, and feeding it to
+#   throttle closes the loop this node deliberately opened (see _throttle_for).
+#   dc is steering-independent; keep it.
+#
+#   The final turn is entered off a straight, so dc stays saturated until the
+#   wall is close. Widening centre_cone_deg from 4.0 is the steering-
+#   independent way to buy lead time; at tmax 0.20 the law only needs about
+#   4 m of dc, so capping it lower costs nothing.
+#
+# NOT YET ADDRESSED
+#   * speed_per_throttle 24.3 is a steady-state fit from two points. It says
+#     nothing about how quickly the vehicle REACHES that speed, so the law
+#     will command changes faster than the vehicle can follow. If the sqrt law
+#     proves jumpy, a rate limit on throttle is the next thing to try.
+#   * Corner-exit steering transient measured at 0.1 s: peaks decay
+#     0.043 -> 0.009 -> 0.004 rad, i.e. damped, period about 2.3 s. Harmless at
+#     0.10 throttle. Re-measure at higher speed, since the fixed 54 ms sensor
+#     delay erodes phase margin as speed rises.
+#
+# REVISION NOTES (v9)
+# -----------------------------------------------------------------------------
+# NO ALGORITHMIC CHANGE. Six declared defaults are retuned for the Phase 2
+# competition track (the bridge-silhouette layout in the compete simulator
+# build), which has two near-90-degree corners and two sharp tower apexes,
+# where Porto had neither. v8 defaults drove into the walls continuously on
+# this layout: 18 collisions in 20 seconds.
+#
+# Each change was made and measured on its own. Result at the end: 8 laps,
+# zero collisions, 21.7 s best lap.
+#
+#   fov_deg          60.0 -> 100.0
+#     _prepare discards every sample outside the window before selection. The
+#     openings at the two sharp corners sit near 80-90 degrees of bearing, so
+#     at 60 they were deleted before the algorithm ever saw them and the
+#     deepest remaining sample was the wall ahead. Logged steer was 0.00 rad
+#     at 5.4 m/s entering a corner the LiDAR could see perfectly well. 130 was
+#     also tried and gave no further gain, so 100 is the setting.
+#
+#   lookahead_m      1.90 -> 1.20
+#     Pure pursuit saturates at alpha = 90 deg, so the largest angle the law
+#     can EVER command is atan(2L / Ld). At Ld 1.90 that is 0.329 rad, only
+#     63 per cent of the 0.5236 mechanical limit, bounding the tightest
+#     achievable radius at L/tan(0.329) = 0.95 m. The apexes here are tighter
+#     than that, so widening the field of view let the car see and aim at the
+#     corner while the steering law still refused to turn hard enough. Full
+#     authority needs Ld <= 2L/tan(0.5236) = 1.12 m; 1.20 gives 0.495 rad and
+#     a 0.60 m minimum radius, which clears every corner on this track.
+#
+#   throttle         0.22 -> 0.10
+#     At 5.4 m/s the tightest radius the tyres hold is v^2/a_lat ~ 2.98 m,
+#     against apexes far tighter. The car was not mis-steering, it was
+#     carrying speed it could not turn at. 0.14 was tried after the stack was
+#     clean: 17.0 s best lap but wobbly with clipped corners, so 0.10 stands
+#     until the depth ramp replaces the constant.
+#
+#   derate_exponent  1.0 -> 2.0
+#     The argument for this was already written in _throttle_for and is
+#     unchanged; v9 simply adopts it. Linear derate charges every small
+#     correction full price: a commanded 0.22 was delivered as 0.179 at only
+#     0.10 rad of steer. At exponent 2.0 a tenth of lock costs one per cent
+#     instead of ten, and full lock still yields zero.
+#
+#   steer_derate     1.0 -> 0.7
+#     Once lookahead_m unlocked near-full lock, the derate unlocked with it.
+#     At steer_norm 0.944 the cut was 0.891, leaving 0.011 throttle: the car
+#     reached corners it could now steer round and then STALLED in them,
+#     nose against the wall at 0.26 m/s with no drive to rotate out. The
+#     derate's justification is the lateral tyre curve peaking at 0.01 slip,
+#     which is a grip argument that does not apply below 1 m/s. Capping the
+#     cut at 70 per cent guarantees residual drive through a corner. 0.5 was
+#     not needed; 0.7 solved it.
+#
+#   bias_gain        0.0 -> 0.35
+#     _corridor_bias was written in v8 as diagnostic-only. It is now given
+#     authority. The remaining collisions were an ENTRY LINE problem, not a
+#     perception or steering one: the car arrived at both sharp corners
+#     hugging the inside wall (logged L = 0.47 -> 0.40 -> 0.33 m while R rose
+#     to 1.23), and _extend_disparities blanks atan(half_car / near_d) either
+#     side of an edge, which at 0.33 m is 42 degrees. The corner was erased
+#     by the extender because the car was too close to the wall going in.
+#     Biasing toward the open side centres the car on the straight (logged
+#     L = 0.77, R = 0.77 after the change) so the opening stays visible.
+#     0.25 fixed the first corner but not the last; 0.35 fixed both.
+#
+# STILL OPEN AT THIS REVISION
+#   * Straights run at 0.100 throttle with dc reading 5.5-6.5 m of clear road.
+#     dc separates cleanly (median ~5.5 straight against 0.3-0.9 in corners),
+#     so it is the right input for the ramp in _throttle_for. NOTE that
+#     _path_depth currently returns d1, which measured +0.193 correlation
+#     with speed (inverted, unusable); rewiring it to return dc is the
+#     precondition for enabling use_depth_throttle.
+#   * Bridge tick measured at 17.5 Hz on the compete build, max frame gap
+#     0.103 s. A command held that long at 6 m/s is 62 cm of travel, which is
+#     the most likely cause of run-to-run variation at corner entry.
+#   * The final turn still passes close: logged R as low as 0.04 m. That is
+#     the thinnest margin on the track and the first thing to fail when
+#     speed rises.
 #
 # REVISION NOTES (v8)
 # -----------------------------------------------------------------------------
@@ -124,6 +308,13 @@ class GapFollower(Node):
         self.declare_parameter('throttle_max', 0.26)
         self.declare_parameter('depth_min_m', 2.0)
         self.declare_parameter('depth_max_m', 6.0)
+        # v10: depth source and speed law
+        self.declare_parameter('depth_source', 'dc')   # d1 | d2 | dc | da
+        self.declare_parameter('depth_law', 'off')     # off | ramp | sqrt
+        self.declare_parameter('speed_per_throttle', 24.3)
+        self.declare_parameter('decel_mps2', 4.3)
+        self.declare_parameter('decel_margin_m', 0.30)
+        self.declare_parameter('throttle_floor', 0.05)
         self.declare_parameter('front_cone_deg', 15.0)
         self.declare_parameter('steer_derate', 0.7)
         self.declare_parameter('derate_exponent', 2.0)
@@ -140,6 +331,7 @@ class GapFollower(Node):
 
         self._reload_parameters()
         self.last_log_s = 0.0
+        self.depth_v1 = 0.0
         self.depth_v2 = 0.0
         self.depth_cone = 0.0
         self.depth_aim = 0.0
@@ -157,7 +349,7 @@ class GapFollower(Node):
         self.scan_sub = self.create_subscription(
             LaserScan, '/autodrive/roboracer_1/lidar', self.scan_callback, qos)
 
-        self.get_logger().info('gap_follower v9 ready, waiting for laser scans')
+        self.get_logger().info('gap_follower v10 ready, waiting for laser scans')
 
     def _reload_parameters(self):
         """Pull current parameter values into plain attributes each cycle."""
@@ -176,6 +368,12 @@ class GapFollower(Node):
         self.throttle_max = g('throttle_max').value
         self.depth_min_m = g('depth_min_m').value
         self.depth_max_m = g('depth_max_m').value
+        self.depth_source = str(g('depth_source').value).lower()
+        self.depth_law = str(g('depth_law').value).lower()
+        self.speed_per_throttle = g('speed_per_throttle').value
+        self.decel_mps2 = g('decel_mps2').value
+        self.decel_margin_m = g('decel_margin_m').value
+        self.throttle_floor = g('throttle_floor').value
         self.front_cone_rad = math.radians(g('front_cone_deg').value)
         self.steer_derate = g('steer_derate').value
         self.derate_exponent = g('derate_exponent').value
@@ -326,7 +524,7 @@ class GapFollower(Node):
     def _corridor_bias(self, ranges, angles):
         """
         Measure the lateral asymmetry of the corridor and derive a steering
-        bias from it. ACTIVE since v9 at bias_gain 0.35.
+        bias from it. DIAGNOSTIC ONLY at bias_gain 0.0.
 
         A gap follower that aims at the deepest visible point traces a path
         near the centre of the corridor. That is not a racing line: a racing
@@ -540,13 +738,19 @@ class GapFollower(Node):
         steering, so that throttle is already dropping while the corner is
         still several metres away. Deceleration is by idle torque alone.
         """
+        self.depth_v1 = self._path_depth_v1(ranges, angles, steer_norm)
         self.depth_v2 = self._path_depth_v2(ranges, angles, steer_norm)
         self.depth_cone = self._depth_cone(
             ranges, angles, 0.0, self.centre_cone_rad)
         self.depth_aim = self._depth_cone(
             ranges, angles, self._aim_from_steer(steer_norm),
             self.aim_cone_rad)
-        return self._path_depth_v1(ranges, angles, steer_norm)
+        return {
+            'd1': self.depth_v1,
+            'd2': self.depth_v2,
+            'dc': self.depth_cone,
+            'da': self.depth_aim,
+        }.get(self.depth_source, self.depth_cone)
 
     def _throttle_for(self, depth_m, steer_norm):
         """
@@ -574,12 +778,34 @@ class GapFollower(Node):
         and depth_max_m should be set so that throttle is already falling
         while the corner is still several metres away.
         """
-        if self.use_depth_throttle:
+        if self.depth_law == 'ramp':
             span = max(self.depth_max_m - self.depth_min_m, 1e-3)
             frac = (depth_m - self.depth_min_m) / span
             frac = float(np.clip(frac, 0.0, 1.0))
             throttle = self.throttle_min + frac * (
                 self.throttle_max - self.throttle_min)
+
+        elif self.depth_law == 'sqrt':
+            # Fastest speed from which the vehicle can still stop within the
+            # clearance it can currently see:  v = sqrt(2 * a * d).
+            #
+            # a is the MEASURED idle coastdown, 4.3 m/s^2 (coastdown.py); there
+            # is no brake on this vehicle and negative throttle engages reverse,
+            # so idle torque is the only deceleration available and this is the
+            # correct conservative form. decel_margin_m keeps a stopping buffer
+            # short of the obstacle itself.
+            #
+            # speed_per_throttle converts the speed target into a command. The
+            # constant is measured, not assumed: logged steady state gave
+            # 0.10 -> 2.49 m/s and 0.22 -> 5.40 m/s, a slope of 24.25 m/s per
+            # unit throttle with a negligible intercept. Re-measure it if the
+            # vehicle model changes.
+            usable = max(depth_m - self.decel_margin_m, 0.0)
+            v_target = math.sqrt(2.0 * self.decel_mps2 * usable)
+            throttle = v_target / max(self.speed_per_throttle, 1e-3)
+            throttle = float(np.clip(
+                throttle, self.throttle_min, self.throttle_max))
+
         else:
             throttle = self.throttle
 
@@ -598,6 +824,14 @@ class GapFollower(Node):
         # hard pushes the vehicle past the grip peak and it runs wide on exit.
         cut = self.steer_derate * (abs(steer_norm) ** self.derate_exponent)
         throttle *= max(1.0 - cut, 0.0)
+
+        # Floor. At full lock with steer_derate 0.7 the derate leaves 30 per
+        # cent of a base that the law may itself have cut to near zero, and the
+        # vehicle then STALLS in the corner: nose against the wall, no drive to
+        # rotate out. Observed directly at v8 defaults. The floor only applies
+        # where a law is active, so v9 behaviour is unchanged.
+        if self.depth_law != 'off':
+            throttle = max(throttle, self.throttle_floor)
         return max(throttle, 0.0)
 
     def _log_state(self, msg, target_rad, depth_m, steer_norm, throttle,
@@ -612,7 +846,7 @@ class GapFollower(Node):
             'd1={:.2f} d2={:.2f} dc={:.2f} da={:.2f}  '
             'L={:.2f} R={:.2f} bias={:+.3f}'.format(
                 target_rad, steer_norm, throttle,
-                depth_m, self.depth_v2, self.depth_cone,
+                self.depth_v1, self.depth_v2, self.depth_cone,
                 self.depth_aim,
                 free_l, free_r, bias_rad))
 
