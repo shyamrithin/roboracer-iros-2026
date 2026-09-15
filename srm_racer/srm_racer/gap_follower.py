@@ -110,23 +110,23 @@ class GapFollower(Node):
     def __init__(self):
         super().__init__('gap_follower')
 
-        self.declare_parameter('fov_deg', 60.0)
+        self.declare_parameter('fov_deg', 100.0)
         self.declare_parameter('horizon_m', 8.0)
         self.declare_parameter('disparity_threshold_m', 0.20)
         self.declare_parameter('extend_margin_m', 0.16)
         self.declare_parameter('tie_tolerance_m', 0.50)
         self.declare_parameter('use_pure_pursuit', True)
-        self.declare_parameter('lookahead_m', 1.90)
+        self.declare_parameter('lookahead_m', 1.20)
         self.declare_parameter('steering_gain', 0.45)
-        self.declare_parameter('throttle', 0.22)
+        self.declare_parameter('throttle', 0.10)
         self.declare_parameter('use_depth_throttle', False)
         self.declare_parameter('throttle_min', 0.09)
         self.declare_parameter('throttle_max', 0.26)
         self.declare_parameter('depth_min_m', 2.0)
         self.declare_parameter('depth_max_m', 6.0)
         self.declare_parameter('front_cone_deg', 15.0)
-        self.declare_parameter('steer_derate', 1.0)
-        self.declare_parameter('derate_exponent', 1.0)
+        self.declare_parameter('steer_derate', 0.7)
+        self.declare_parameter('derate_exponent', 2.0)
         self.declare_parameter('path_half_width_m', 0.32)
         self.declare_parameter('arc_max_m', 8.0)
         self.declare_parameter('min_preview_radius_m', 3.0)
@@ -136,7 +136,7 @@ class GapFollower(Node):
         self.declare_parameter('log_period_s', 1.0)
         self.declare_parameter('bias_side_deg', 55.0)
         self.declare_parameter('bias_window_deg', 25.0)
-        self.declare_parameter('bias_gain', 0.0)  # disabled: see _corridor_bias
+        self.declare_parameter('bias_gain', 0.35)  # active since v9
 
         self._reload_parameters()
         self.last_log_s = 0.0
@@ -157,7 +157,7 @@ class GapFollower(Node):
         self.scan_sub = self.create_subscription(
             LaserScan, '/autodrive/roboracer_1/lidar', self.scan_callback, qos)
 
-        self.get_logger().info('gap_follower v8 ready, waiting for laser scans')
+        self.get_logger().info('gap_follower v9 ready, waiting for laser scans')
 
     def _reload_parameters(self):
         """Pull current parameter values into plain attributes each cycle."""
@@ -326,7 +326,7 @@ class GapFollower(Node):
     def _corridor_bias(self, ranges, angles):
         """
         Measure the lateral asymmetry of the corridor and derive a steering
-        bias from it. DIAGNOSTIC ONLY at bias_gain 0.0.
+        bias from it. ACTIVE since v9 at bias_gain 0.35.
 
         A gap follower that aims at the deepest visible point traces a path
         near the centre of the corridor. That is not a racing line: a racing

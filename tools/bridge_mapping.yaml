@@ -1,0 +1,122 @@
+# =============================================================================
+# bridge_mapping.yaml
+# -----------------------------------------------------------------------------
+# Project : RoboRacer Sim Racing League @ IROS 2026 - Team CEM Navigators (26)
+# Author  : Shyam Rithin
+# Location: ~/roboracer/tools/bridge_mapping.yaml
+# Usage   : ros2 launch slam_toolbox online_async_launch.py \
+#             slam_params_file:=$HOME/roboracer/tools/bridge_mapping.yaml
+# Created : 2026-09-15  (Phase 2 competition track)
+# =============================================================================
+#
+# CODE DESCRIPTION
+# -----------------------------------------------------------------------------
+# slam_toolbox in MAPPING mode for the Phase 2 competition track (the bridge
+# silhouette layout in the compete simulator build). Derived from
+# porto_localization.yaml; the solver, frame and scan-matcher settings are
+# carried over unchanged so the two configs stay comparable.
+#
+# WHY THIS FILE EXISTS
+#   slam_toolbox's stock mapper_params_online_async.yaml sets
+#       base_frame: base_footprint
+#   but srm_racer's dead_reckoning node publishes odom -> base_link. Every scan
+#   callback therefore failed its TF lookup and logged
+#       [slam_toolbox]: Failed to compute odom pose
+#   continuously, producing no map. Verified with:
+#       ros2 run tf2_ros tf2_echo odom base_link    -> streams correctly
+#       (target_frame "odom" reported invalid only until the first transform)
+#   base_frame below is the fix.
+#
+# DIFFERENCES FROM porto_localization.yaml
+#   mode              localization -> mapping
+#   map_file_name     removed; there is no prior graph for this track
+#   map_start_pose    removed; the track's start pose is not yet known, and in
+#                     mapping mode the graph origin is wherever the car starts
+#   travel thresholds loosened from the localization values, per the note in
+#                     that file that its settings are deliberately denser than
+#                     the mapping config
+#   scan_buffer_size  10 -> 20, more context per match while building
+#
+# KNOWN CONDITIONS AT TIME OF WRITING
+#   Bridge tick measured at 17.5 Hz on the compete build (min 0.051 s,
+#   max 0.103 s), i.e. the same rate as the practice build, not 40 Hz.
+#   minimum_time_interval below is set accordingly.
+#
+# AFTER A CLEAN LOOP
+#   ros2 run nav2_map_server map_saver_cli -f ~/mapdata/bridge_track
+#   To also keep the pose graph for later localization, call the
+#   /slam_toolbox/serialize_map service before shutting the node down.
+# =============================================================================
+
+slam_toolbox:
+  ros__parameters:
+
+    # ---- Plugins ----
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ---- Mode ----
+    mode: mapping
+
+    # ---- Frames and topics ----
+    # base_frame MUST match what dead_reckoning publishes. This is the line
+    # that was wrong in the stock config.
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link
+    scan_topic: /scan
+
+    debug_logging: false
+    throttle_scans: 1
+    transform_publish_period: 0.02
+    map_update_interval: 1.0
+    resolution: 0.05
+    max_laser_range: 10.0
+    minimum_time_interval: 0.1
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.0
+    stack_size_to_use: 40000000
+
+    # ---- Matching ----
+    use_scan_matching: true
+    use_scan_barycenter: true
+    minimum_travel_distance: 0.1
+    minimum_travel_heading: 0.1
+    scan_buffer_size: 20
+    scan_buffer_maximum_scan_distance: 10.0
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+
+    # ---- Loop closure ----
+    # The layout is a single closed loop, so the start/finish revisit is the
+    # one that squares the graph. Worth watching that it fires.
+    do_loop_closing: true
+    loop_search_maximum_distance: 3.0
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+    # ---- Correlation search, coarse ----
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    # ---- Correlation search, loop closure ----
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # ---- Scan matcher ----
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
+    fine_search_angle_offset: 0.00349
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution: 0.0349
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
