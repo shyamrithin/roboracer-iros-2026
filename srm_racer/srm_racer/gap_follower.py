@@ -341,18 +341,18 @@ class GapFollower(Node):
         self.declare_parameter('throttle', 0.10)
         self.declare_parameter('use_depth_throttle', False)
         self.declare_parameter('throttle_min', 0.09)
-        self.declare_parameter('throttle_max', 0.26)
+        self.declare_parameter('throttle_max', 0.24)
         self.declare_parameter('depth_min_m', 2.0)
         self.declare_parameter('depth_max_m', 6.0)
         # v10: depth source and speed law
         self.declare_parameter('depth_source', 'dc')   # d1 | d2 | dc | da
-        self.declare_parameter('depth_law', 'off')     # off | ramp | sqrt
+        self.declare_parameter('depth_law', 'sqrt')     # off | ramp | sqrt
         self.declare_parameter('speed_per_throttle', 24.3)
         self.declare_parameter('decel_mps2', 4.3)
-        self.declare_parameter('decel_margin_m', 0.30)
+        self.declare_parameter('decel_margin_m', 1.2)
         self.declare_parameter('throttle_floor', 0.05)
         self.declare_parameter('front_cone_deg', 15.0)
-        self.declare_parameter('steer_derate', 0.7)
+        self.declare_parameter('steer_derate', 0.85)
         self.declare_parameter('derate_exponent', 2.0)
         self.declare_parameter('path_half_width_m', 0.32)
         self.declare_parameter('arc_max_m', 8.0)
@@ -385,7 +385,7 @@ class GapFollower(Node):
         self.scan_sub = self.create_subscription(
             LaserScan, '/autodrive/roboracer_1/lidar', self.scan_callback, qos)
 
-        self.get_logger().info('gap_follower v10 ready, waiting for laser scans')
+        self.get_logger().info('gap_follower v11 ready, waiting for laser scans')
 
     def _reload_parameters(self):
         """Pull current parameter values into plain attributes each cycle."""
