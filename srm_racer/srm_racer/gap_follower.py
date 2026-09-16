@@ -358,7 +358,7 @@ class GapFollower(Node):
         self.declare_parameter('arc_max_m', 8.0)
         self.declare_parameter('min_preview_radius_m', 3.0)
         self.declare_parameter('min_arc_m', 0.25)
-        self.declare_parameter('centre_cone_deg', 4.0)
+        self.declare_parameter('centre_cone_deg', 2.5)
         self.declare_parameter('aim_cone_deg', 6.0)
         self.declare_parameter('log_period_s', 1.0)
         self.declare_parameter('bias_side_deg', 55.0)
@@ -385,7 +385,7 @@ class GapFollower(Node):
         self.scan_sub = self.create_subscription(
             LaserScan, '/autodrive/roboracer_1/lidar', self.scan_callback, qos)
 
-        self.get_logger().info('gap_follower v13 ready, waiting for laser scans')
+        self.get_logger().info('gap_follower v14 ready, waiting for laser scans')
 
     def _reload_parameters(self):
         """Pull current parameter values into plain attributes each cycle."""
@@ -560,7 +560,7 @@ class GapFollower(Node):
     def _corridor_bias(self, ranges, angles):
         """
         Measure the lateral asymmetry of the corridor and derive a steering
-        bias from it. DIAGNOSTIC ONLY at bias_gain 0.0.
+        bias from it. ACTIVE at bias_gain 0.5 since v13.
 
         A gap follower that aims at the deepest visible point traces a path
         near the centre of the corridor. That is not a racing line: a racing
