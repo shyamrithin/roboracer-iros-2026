@@ -113,6 +113,42 @@
 #   independent way to buy lead time; at tmax 0.20 the law only needs about
 #   4 m of dc, so capping it lower costs nothing.
 #
+# MEASURED AT 56 Hz - DISTRIBUTED MODE, 2026-09-16
+# -----------------------------------------------------------------------------
+# All earlier tuning was done at 15 Hz with the simulator and devkit on one
+# machine. The organisers confirmed (Slack) that the native Linux simulator
+# build causes this and that distributed computing mode is the fix: simulator
+# on a second machine over LAN, devkit here. Measured 15.0 -> 56.3 Hz, median
+# dt 66.7 -> 17.7 ms, max dt 103 -> 24 ms. Tune for 40-50 Hz per organisers.
+#
+#   v9 defaults .............................. 20.5 s clean  (21.7 at 15 Hz)
+#   sqrt tmax 0.16 margin 1.2 derate 0.85 .... 16.4 s, 10 laps, 0 collisions
+#   sqrt tmax 0.20 margin 1.2 derate 0.85 .... 15.5 s, 10 laps, 0 collisions
+#
+#   bias_gain is back at its 0.35 DEFAULT in both runs. The 0.20 value was a
+#   workaround for straight-line weaving that does not exist at 56 Hz: logged
+#   straights now hold L=0.77 R=0.77 with bias within +/-0.004 for consecutive
+#   samples, while the term still contributes +0.19 to +0.26 through corners.
+#   The weaving was stale feedback, not excessive gain.
+#
+#   throttle_max 0.20 clipped the final turn at 15 Hz and is clean at 56 Hz.
+#   The grip limit did not change; command tracking did.
+#
+#   At dc 5.5 the sqrt law computes 0.243, so throttle_max below that is still
+#   capping the straights. decel_margin_m is the next lever after the cap
+#   stops binding, since it raises speed everywhere rather than on straights
+#   alone.
+#
+# RESOLVED: open item 4, the 3.2 rad/s steering rate limit. Measured directly
+# from the organisers' Phase 1 bag: p99 rate 3.335 rad/s, p99.9 6.356, max
+# 12.435 - the limit is not enforced in simulation. Command-to-actual lag is
+# 24 ms at r=0.999, tracking error p95 0.021 rad. Nothing to model.
+#
+# NOTE ON THE BAG: message rate there is 133 Hz on every topic, but LiDAR
+# CONTENT updates at 39.8 Hz with 70.2 per cent duplicate payloads - the
+# bridge restamps and republishes each scan. IMU and encoders are genuinely
+# 133 Hz. Compare content rate, not message rate.
+#
 # NOT YET ADDRESSED
 #   * speed_per_throttle 24.3 is a steady-state fit from two points. It says
 #     nothing about how quickly the vehicle REACHES that speed, so the law
