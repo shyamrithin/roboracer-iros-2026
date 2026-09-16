@@ -109,9 +109,9 @@
 #   dc is steering-independent; keep it.
 #
 #   The final turn is entered off a straight, so dc stays saturated until the
-#   wall is close. Widening centre_cone_deg from 4.0 is the steering-
-#   independent way to buy lead time; at tmax 0.20 the law only needs about
-#   4 m of dc, so capping it lower costs nothing.
+#   wall is close. NARROWING centre_cone_deg is the steering-independent
+#   way to buy lead time: a narrow wedge sees past the corridor walls and
+#   further down the straight. v14 took it from 4.0 to 2.5.
 #
 # MEASURED AT 56 Hz - DISTRIBUTED MODE, 2026-09-16
 # -----------------------------------------------------------------------------

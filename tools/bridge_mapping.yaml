@@ -38,8 +38,8 @@
 #   scan_buffer_size  10 -> 20, more context per match while building
 #
 # KNOWN CONDITIONS AT TIME OF WRITING
-#   Bridge tick measured at 17.5 Hz on the compete build (min 0.051 s,
-#   max 0.103 s), i.e. the same rate as the practice build, not 40 Hz.
+#   Bridge runs at 56 Hz in distributed mode (sim on a second machine).
+#   LiDAR content updates at ~40 Hz. minimum_time_interval set accordingly.
 #   minimum_time_interval below is set accordingly.
 #
 # AFTER A CLEAN LOOP
@@ -76,7 +76,7 @@ slam_toolbox:
     map_update_interval: 1.0
     resolution: 0.05
     max_laser_range: 10.0
-    minimum_time_interval: 0.1
+    minimum_time_interval: 0.02
     transform_timeout: 0.2
     tf_buffer_duration: 30.0
     stack_size_to_use: 40000000
@@ -84,8 +84,8 @@ slam_toolbox:
     # ---- Matching ----
     use_scan_matching: true
     use_scan_barycenter: true
-    minimum_travel_distance: 0.1
-    minimum_travel_heading: 0.1
+    minimum_travel_distance: 0.05
+    minimum_travel_heading: 0.05
     scan_buffer_size: 20
     scan_buffer_maximum_scan_distance: 10.0
     link_match_minimum_response_fine: 0.1
@@ -95,14 +95,14 @@ slam_toolbox:
     # The layout is a single closed loop, so the start/finish revisit is the
     # one that squares the graph. Worth watching that it fires.
     do_loop_closing: true
-    loop_search_maximum_distance: 3.0
+    loop_search_maximum_distance: 5.0
     loop_match_minimum_chain_size: 10
     loop_match_maximum_variance_coarse: 3.0
     loop_match_minimum_response_coarse: 0.35
     loop_match_minimum_response_fine: 0.45
 
     # ---- Correlation search, coarse ----
-    correlation_search_space_dimension: 0.5
+    correlation_search_space_dimension: 0.6
     correlation_search_space_resolution: 0.01
     correlation_search_space_smear_deviation: 0.1
 
@@ -112,10 +112,10 @@ slam_toolbox:
     loop_search_space_smear_deviation: 0.03
 
     # ---- Scan matcher ----
-    distance_variance_penalty: 0.5
-    angle_variance_penalty: 1.0
+    distance_variance_penalty: 2.0
+    angle_variance_penalty: 4.0
     fine_search_angle_offset: 0.00349
-    coarse_search_angle_offset: 0.349
+    coarse_search_angle_offset: 0.175
     coarse_angle_resolution: 0.0349
     minimum_angle_penalty: 0.9
     minimum_distance_penalty: 0.5
