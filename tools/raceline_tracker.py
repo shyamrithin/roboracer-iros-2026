@@ -193,7 +193,7 @@ class RacelineTracker(Node):
         # window forward of the previous index. This also stops the tracker
         # latching onto a nearby part of the line it has not reached yet,
         # which on a circuit that doubles back is a real hazard.
-        w = 40
+        w = 8
         cand = [(self.idx + k) % self.n for k in range(-5, w)]
         d = np.hypot(self.wx[cand] - x, self.wy[cand] - y)
         j = int(np.argmin(d))
