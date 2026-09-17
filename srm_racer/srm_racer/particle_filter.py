@@ -197,6 +197,17 @@ class ParticleFilter(Node):
                              + msg.angle_increment * self.idx)
             self.range_max = msg.range_max
 
+        # The bridge republishes each scan with a fresh header stamp: 24 per
+        # cent duplicates here, 70 per cent on the organisers' machine, where
+        # the message rate is 133 Hz against a genuine 40 Hz sensor. Weighting
+        # the same measurement repeatedly makes the filter overconfident and
+        # collapses the cloud. Skip the update when nothing has changed.
+        digest = hash(msg.ranges.tobytes()) if hasattr(msg.ranges, 'tobytes') \
+            else hash(tuple(msg.ranges))
+        if digest == getattr(self, '_last_digest', None):
+            return
+        self._last_digest = digest
+
         travelled = 0.5 * (self.enc_dist['left'] + self.enc_dist['right'])
         if self.last_dist is None:
             self.last_dist = travelled
