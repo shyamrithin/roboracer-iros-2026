@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # =============================================================================
 # build_track_map.py
-# RoboRacer IROS 2026 / Team 26 CEM Navigators
+# RoboRacer IROS 2026 / CEM Navigators
 # =============================================================================
 #
 # CODE DESCRIPTION

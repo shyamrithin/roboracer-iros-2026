@@ -28,6 +28,9 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        # Map and raceline must ship inside the image: the submitted
+        # container has no host mount to read them from.
+        (os.path.join('share', package_name, 'maps'), glob('maps/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -41,6 +44,8 @@ setup(
             'gap_follower = srm_racer.gap_follower:main',
             'dead_reckoning = srm_racer.dead_reckoning:main',
             'coastdown = srm_racer.coastdown:main',
+            'particle_filter = srm_racer.particle_filter:main',
+            'raceline_tracker = srm_racer.raceline_tracker:main',
         ],
     },
 )
