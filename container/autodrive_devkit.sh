@@ -26,4 +26,4 @@ sleep 3
 ros2 run srm_racer particle_filter "$MAPS/bridge_ips_cl.yaml" -b 120 -n 3000 &
 sleep 5
 
-ros2 run srm_racer raceline_tracker "$MAPS/raceline_v17_r.csv"
+ros2 run srm_racer raceline_tracker "$MAPS/raceline_v7_r.csv"
