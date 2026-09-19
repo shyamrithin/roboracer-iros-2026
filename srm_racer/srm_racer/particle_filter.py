@@ -292,7 +292,13 @@ class ParticleFilter(Node):
 
     # ---- output -----------------------------------------------------------
     def _broadcast(self):
-        if self.beam_ang is None:
+        # Do not publish a transform until the filter has actually converged.
+        # raceline_tracker starts driving the instant map -> base_link exists,
+        # so publishing the prior pose before any scan has been processed lets
+        # it drive on a stale estimate: observed on 2026-09-19, the vehicle
+        # was 3 m down the deck before the first correction arrived and the
+        # filter never recovered.
+        if self.beam_ang is None or self.updates < 80:
             return
         now = self.get_clock().now().to_msg()
         x, y, yaw = self.est
