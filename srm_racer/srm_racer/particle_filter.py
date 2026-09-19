@@ -151,6 +151,9 @@ class ParticleFilter(Node):
         self.beam_ang = None
         self.updates = 0
         self.est = (ix, iy, iyaw)
+        self._best_hist = []
+        # a healthy match scores well above this; tune from the log
+        self.diverge_logw = -800.0
 
         qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT,
                          history=HistoryPolicy.KEEP_LAST, depth=1)
@@ -259,6 +262,30 @@ class ParticleFilter(Node):
         # a beam landing outside the map is as bad as landing far from a wall
         d = np.where(inside, d, 2.0)
         logw = -(d * d).sum(axis=1) / (2.0 * self.sigma_hit ** 2)
+
+        # ---- divergence detection ----
+        # The rules reset the vehicle to the last checkpoint after every
+        # collision, which the motion model cannot see: encoders and IMU
+        # register no teleport, so the filter keeps believing the old pose and
+        # never recovers. Roughening alone only rescues small displacements.
+        # A sustained collapse in the best particle's likelihood means the
+        # cloud is nowhere near the vehicle, so scatter it widely and let the
+        # next few scans re-converge.
+        best = float(logw.max())
+        self._best_hist.append(best)
+        if len(self._best_hist) > 12:
+            self._best_hist.pop(0)
+        if (len(self._best_hist) == 12
+                and max(self._best_hist) < self.diverge_logw
+                and self.updates > 120):
+            self.get_logger().warn(
+                f'divergence: best log-likelihood {best:.1f}, scattering')
+            self.P[:, 0] += self.rng.normal(0, 0.8, self.N)
+            self.P[:, 1] += self.rng.normal(0, 0.8, self.N)
+            self.P[:, 2] += self.rng.normal(0, 0.15, self.N)
+            self._best_hist.clear()
+            self.w = np.full(self.N, 1.0 / self.N)
+            return
 
         logw -= logw.max()
         w = np.exp(logw)
